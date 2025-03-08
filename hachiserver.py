@@ -66,10 +66,10 @@ class Config:
     hop_size: int = 512
     n_mels: int = 128
     n_fft: int = 2048
-    mel_fmin: float = 20.0
+    mel_fmin: float = 40
     mel_fmax: float = 16000.0
     f0_extractor: str = 'parselmouth'
-    f0_min: float = 20.0
+    f0_min: float = 65
     f0_max: float = 1600
     vocoder_path: str = r"pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx"
 
