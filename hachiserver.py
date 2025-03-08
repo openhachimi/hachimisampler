@@ -679,18 +679,28 @@ class Resampler:
         pitch_interp = interp.Akima1DInterpolator(t_pitch, pitch)
         pitch_render = pitch_interp(clip(t, start, t_pitch[-1]))
         f0_render = midi_to_hz(pitch_render) + f0_off_render * mod
-        print('f0_render', f0_render.shape)
-        print('mel_render', mel_render.shape)
-        
+
+        # 在start左边的mel帧数
+        start_left_mel_frames = (start - thop/2)//thop
+        if start_left_mel_frames > 64:
+            cut_left_mel_frames = start_left_mel_frames - 64
+        else:
+            cut_left_mel_frames = 0
+        # 在length_req+con右边的mel帧数
+        mel_f=mel_render.shape[1]
+        end_right_mel_frames = mel_f - (length_req+con - thop/2)//thop
+        if end_right_mel_frames > 64:
+            cut_right_mel_frames = end_right_mel_frames - 64
+        else:
+            cut_right_mel_frames = 0
+        # 截取mel帧
+
+        mel_render = mel_render[:, int(cut_left_mel_frames):int(mel_f-cut_right_mel_frames)]
+
+        f0_render = f0_render[int(cut_left_mel_frames):int(mel_f-cut_right_mel_frames)]
 
         wav_con = m2w(f0_render,mel_render)
-        render = wav_con[int(start*Config.sampling_rate):int(con*Config.sampling_rate + stretch_length*Config.sampling_rate*speed)]
-        print('wav_con', wav_con.shape)
-        print('start', int(start*Config.sampling_rate))
-        print('con + stretch_length*Config.sampling_rate*speed', int(con*Config.sampling_rate + stretch_length*Config.sampling_rate*speed))
-        print('leg', int((length_req+con)*Config.sampling_rate))
-        print('render', render.shape)
-        print('--------render_len', len(render)/44100)
+        render = wav_con[int(start*Config.sampling_rate-Config.hop_size*cut_left_mel_frames):int((length_req+con)*Config.sampling_rate-Config.hop_size*cut_left_mel_frames)]
         save_wav(self.out_file, render)
 
 def split_arguments(input_string):
