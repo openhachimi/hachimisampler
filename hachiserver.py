@@ -95,8 +95,8 @@ f0Analyzer = F0Analyzer(
 #mel to wave
 def m2w(f0,mel):
     '''
-    mel shape = (n_mels, n_frames*speed)
-    f0 shape = (n_frames*speed,)
+    mel shape = (n_mels, n_frames*scaling_ratio)
+    f0 shape = (n_frames*scaling_ratio,)
     vocoder_keyshift shape = (n_frames,)
     '''
 
@@ -646,19 +646,19 @@ class Resampler:
         print('--------stretch_length', stretch_length)
         if stretch_length < length_req:
             print('stretch_length < length_req')
-            speed = length_req / stretch_length
+            scaling_ratio = length_req / stretch_length
 
-            def stretch(t, con, speed):
-                return np.where(t < con, t, con + (t - con) / speed)
+            def stretch(t, con, scaling_ratio):
+                return np.where(t < con, t, con + (t - con) / scaling_ratio)
             
-            stretched_n_frames = (con + (tatal_time - con)*speed) // thop + 1
+            stretched_n_frames = (con + (tatal_time - con)*scaling_ratio) // thop + 1
             stretched_t_f0 = np.arange(stretched_n_frames) * thop
             stretched_t_mel = stretched_t_f0 + thop / 2
 
             print('stretched_t_f0', stretched_t_f0.shape)
 
-            stretch_t_f0 = clip(stretch(stretched_t_f0, con, speed),0,t_area_f0[-1])
-            stretch_t_mel = clip(stretch(stretched_t_mel, con, speed),0,t_area_mel[-1])
+            stretch_t_f0 = clip(stretch(stretched_t_f0, con, scaling_ratio),0,t_area_f0[-1])
+            stretch_t_mel = clip(stretch(stretched_t_mel, con, scaling_ratio),0,t_area_mel[-1])
 
             print('stretch_t_f0', stretch_t_f0.shape)
 
@@ -668,7 +668,7 @@ class Resampler:
             print('f0_off_render', f0_off_render.shape)
         else:
             print('stretch_length >= length_req, no stretching needed.')
-            speed = 1
+            scaling_ratio = 1
             f0_off_render = f0_off
             mel_render = mel
             
