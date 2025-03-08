@@ -1,4 +1,4 @@
-[English](https://github.com/mtfotto/hachimisampler/blob/dingdongji/README.md) [正軆中文（台湾）](https://github.com/mtfotto/hachimisampler/blob/dingdongji/README_zh_tw.md) [日本語](https://github.com/mtfotto/hachimisampler/blob/dingdongji/README_JA.md)
+[English](https://github.com/mtfotto/hachimisampler/blob/dingdongji/README.md) [正體中文](https://github.com/mtfotto/hachimisampler/blob/dingdongji/README_zh_tw.md) [日本語](https://github.com/mtfotto/hachimisampler/blob/dingdongji/README_JA.md)
 # 哈基踩（hachimisampler)
  一个基于 [pc-nsf-hifigan](https://github.com/openvpi/vocoders)的新的utau重采样器。
 ## 为什么叫哈基踩（hachimisampler）?
