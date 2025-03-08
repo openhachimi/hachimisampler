@@ -1,3 +1,5 @@
+[简体中文](https://github.com/mtfotto/hachimisampler/blob/dingdongji/README_zh_cn.md) [正軆中文](https://github.com/mtfotto/hachimisampler/blob/dingdongji/README_zh_tw.md) [日本語](https://github.com/mtfotto/hachimisampler/blob/dingdongji/README_JA.md)
+# 哈基踩（hachimisampler)
 # hachimisampler
  A brand new resampler for utau based on [pc-nsf-hifigan](https://github.com/openvpi/vocoders).
 ## Why it's named hachimisampler?
