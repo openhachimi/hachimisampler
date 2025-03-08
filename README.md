@@ -9,3 +9,6 @@ pip install numpy scipy resampy pyworld torch onnxruntime praat-parselmouth
 ```
  2. Download the [release](https://github.com/mtfotto/hachimisampler/releases) unpack it and run the 'hachisampler.py'.
  3. Open the UTAU and change the resampler to the path of `hachimisampler.exe`.
+# Thanks
+- [yjzxkxdn](https://github.com/yjzxkxdn)
+- [openvpi](https://github.com/openvpi) for the pc-nsf-hifigan
