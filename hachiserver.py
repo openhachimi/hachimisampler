@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 version = '0.0.2-ccb'
-help_string = '''usage: straycat in_file out_file pitch velocity [flags] [offset] [length] [consonant] [cutoff] [volume] [modulation] [tempo] [pitch_string]
+help_string = '''usage: 🐱haicmimisampler🐱 in_file out_file pitch velocity [flags] [offset] [length] [consonant] [cutoff] [volume] [modulation] [tempo] [pitch_string]
 
 Resamples using the PC-NSF-HIFIGAN Vocoder.
 
