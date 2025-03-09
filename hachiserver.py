@@ -1,20 +1,21 @@
 import logging
 logging.basicConfig(format='%(message)s', level=logging.INFO)
 import os
+import re
+from pathlib import Path # path manipulation
+import dataclasses
+
 import numpy as np # Numpy <3
+import torch
 import soundfile as sf # WAV read + write
 import scipy.interpolate as interp # Interpolator for feats
 import resampy # Resampler (as in sampling rate stuff)
-from pathlib import Path # path manipulation
-import re
-import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import onnxruntime
+
+from nsf_hifigan import NsfHifiGAN
 from wav2mel import PitchAdjustableMelSpectrogram
-import dataclasses
-import soundfile as sf
-import numpy as np
-import torch
+
 
 version = '0.0.2-ccb'
 help_string = '''usage: 🐱haicmimisampler🐱 in_file out_file pitch velocity [flags] [offset] [length] [consonant] [cutoff] [volume] [modulation] [tempo] [pitch_string]
@@ -61,9 +62,20 @@ class Config:
     f0_extractor: str = 'parselmouth'
     f0_min: float = 65
     f0_max: float = 1600
-    vocoder_path: str = r"pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx"
+    fill: int = 6
+    vocoder_path: str = r"pc_nsf_hifigan_44.1k_hop512_128bin_2025.02\model.ckpt"
+    model_type: str = 'onnx' # or 'ckpt' 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-ort_session = onnxruntime.InferenceSession(Config.vocoder_path,providers=['DmlExecutionProvider', 'CPUExecutionProvider'])
+if Config.model_type == 'ckpt':
+    vocoder = NsfHifiGAN(model_path=Path(Config.vocoder_path))
+    vocoder.to_device(Config.device)
+    logging.info(f'Loaded HifiGAN: {vocoder}')
+elif Config.model_type == 'onnx':
+    ort_session = onnxruntime.InferenceSession(Config.vocoder_path,providers=['DmlExecutionProvider', 'CPUExecutionProvider'])
+    logging.info(f'Loaded HifiGAN: {Config.vocoder_path}')
+else:
+    raise ValueError(f'Invalid model type: {Config.model_type}')
 
 melAnalysis_extract_hop_size = PitchAdjustableMelSpectrogram(
     sample_rate=Config.sample_rate, 
@@ -87,47 +99,6 @@ melAnalysis = PitchAdjustableMelSpectrogram(
 
 def dynamic_range_compression_torch(x, C=1, clip_val=1e-9):
     return torch.log(torch.clamp(x, min=clip_val) * C)
-
-#mel to wave
-def m2w(f0,mel):
-    '''
-    mel shape = (n_mels, n_frames*scaling_ratio)
-    f0 shape = (n_frames*scaling_ratio,)
-    vocoder_keyshift shape = (n_frames,)
-    '''
-
-    # 加载vocoder模型
-    print(onnxruntime.get_available_providers(),"00000000000") 
-
-    # 准备输入
-    #mel从tensor转numpy
-    #f0从float64转32
-    f0 = f0.astype(np.float32)
-    mel = mel.astype(np.float32)
-    print(f'mel dtype: {mel.dtype}')
-    print(f'f0 dtype: {f0.dtype}')
-    print(f'mel shape: {mel.shape}')
-    print(f'f0 shape: {f0.shape}')
-    #给mel和f0添加batched维度
-    #print(mel)
-    mel = np.expand_dims(mel, axis=0).transpose(0, 2, 1)
-    f0 = np.expand_dims(f0, axis=0)
-    input_data = {
-        'mel': mel,
-        'f0': f0,
-    }
-
-    # 执行模型
-    output = ort_session.run(['waveform'], input_data)[0]
-
-    # 输出
-    wave = output[0]
-    return wave
-
-
-
-
-
 
 # Pitch string interpreter
 def to_uint6(b64):
@@ -412,7 +383,6 @@ class Resampler:
         self.modulation = float(modulation)
         self.tempo = float(tempo[1:])
         self.pitchbend = pitch_string_to_cents(pitch_string)
-        print('****pitchbend', self.pitchbend)
 
         self.render()
     
@@ -441,7 +411,7 @@ class Resampler:
         # Setup cache path file
         fname = self.in_file.name
         features_path = self.in_file.with_suffix(cache_ext)
-        logging.info(f'------Cache path: {features_path}')
+        logging.info(f'Cache path: {features_path}')
         features = None
 
         if 'G' in self.flags.keys():
@@ -474,7 +444,7 @@ class Resampler:
         logging.info('Generating F0.')
 
         mel_extract_hop_size = melAnalysis_extract_hop_size(torch.from_numpy(x).to(dtype=torch.float32).unsqueeze(0), 0, 1).squeeze()
-        print('**********mel_extract_hop_size', mel_extract_hop_size.shape)
+        logging.info(f'mel_extract_hop_size: {mel_extract_hop_size.shape}')
         mel_extract_hop_size = dynamic_range_compression_torch(mel_extract_hop_size).numpy()
 
     
@@ -502,111 +472,168 @@ class Resampler:
             return
         
         mod = self.modulation / 100
-        print("--------mod", mod)
+        logging.info(f"mod: {mod}")
         
         self.out_file = Path(self.out_file)
         wave = read_wav(Path(self.in_file))
+        logging.info(f'wave: {wave.shape}')
 
         logging.info('hachiming')
         mel_extract_hop_size = features['mel_extract_hop_size']
-        print('**********mel_extract_hop_size', mel_extract_hop_size.shape)
+        logging.info(f'mel_extract_hop_size: {mel_extract_hop_size.shape}')
 
         thop_extract_hop_size = Config.extract_hop_size / Config.sample_rate
         thop = Config.hop_size / Config.sample_rate
+        logging.info(f'thop_extract_hop_size: {thop_extract_hop_size}')
+        logging.info(f'thop: {thop}')
 
         t_area_mel_extract_hop_size = np.arange(mel_extract_hop_size.shape[1]) * thop_extract_hop_size + thop_extract_hop_size / 2
-        tatal_time = t_area_mel_extract_hop_size[-1] + thop_extract_hop_size/2
+        total_time = t_area_mel_extract_hop_size[-1] + thop_extract_hop_size/2
+        logging.info(f"t_area_mel_extract_hop_size: {t_area_mel_extract_hop_size.shape}")
+        logging.info(f"total_time: {total_time}")
 
+        vel = np.exp2(1 - self.velocity / 100)
         offset = self.offset / 1000 # start time
         cutoff = self.cutoff / 1000 # end time
         start = offset
-        print('offset', offset)
-        print('cutoff', cutoff)
+        logging.info(f'vel:{vel}')
+        logging.info(f'offset:{offset}')
+        logging.info(f'cutoff:{cutoff}')
 
+        logging.info('Calculating timing.') 
         if self.cutoff < 0: # deal with relative end time
             end = start - cutoff       #???
         else:
-            end = tatal_time - cutoff
+            end = total_time - cutoff
         con = start + self.consonant / 1000
-        print('--------con', con)
-        print('--------start', start)
-        print('--------end', end)
-        print('--------tatal_time', tatal_time)
-        print('--------wav_len', len(wave)/44100)
-        logging.info('Calculating timing.') 
+        logging.info(f'start:{start}')
+        logging.info(f'end:{end}')
+        logging.info(f'con:{con}')
 
         logging.info('Preparing interpolators.')
         # Make interpolators to render new areas
-        mel_interp = interp.Akima1DInterpolator(t_area_mel_extract_hop_size, mel_extract_hop_size, axis=1)
+        mel_interp = interp.interp1d(t_area_mel_extract_hop_size, mel_extract_hop_size, axis=1)
 
         length_req = self.length / 1000
-        print('--------length_req', length_req)
         stretch_length = end - con
-        print('--------stretch_length', stretch_length)
+        logging.info(f'length_req: {length_req}')
+        logging.info(f'stretch_length: {stretch_length}')
+
         if stretch_length < length_req:
-            print('stretch_length < length_req')
+            logging.info('stretch_length < length_req')
             scaling_ratio = length_req / stretch_length
-
-            def stretch(t, con, scaling_ratio):
-                return np.where(t < con, t, con + (t - con) / scaling_ratio)
-            
-            stretched_n_frames = (con + (tatal_time - con)*scaling_ratio) // thop + 1
-            stretched_t_mel = np.arange(stretched_n_frames) * thop + thop / 2
-
-            stretch_t_mel = np.clip(stretch(stretched_t_mel, con, scaling_ratio),0,t_area_mel_extract_hop_size[-1])
-
-            mel_render = mel_interp(stretch_t_mel)
         else:
-            print('stretch_length >= length_req, no stretching needed.')
+            logging.info('stretch_length >= length_req, no stretching needed.')
             scaling_ratio = 1
-            
-            mel_render = melAnalysis(torch.from_numpy(wave).to(dtype=torch.float32).unsqueeze(0), 0, 1).squeeze()
-            mel_render = dynamic_range_compression_torch(mel_render).numpy()
-            
-        t = np.arange(mel_render.shape[1]) * thop
-        # Calculate pitch in MIDI note number terms
-        pitch = self.pitchbend / 100 + self.pitch
-        t_pitch = 60 * np.arange(len(pitch)) / (self.tempo * 96) + start
-        pitch_interp = interp.Akima1DInterpolator(t_pitch, pitch)
-        pitch_render = pitch_interp(np.clip(t, start, t_pitch[-1]))
-        f0_render = midi_to_hz(pitch_render)
-        print('f0_render', f0_render.shape)
-        print('mel_render', mel_render.shape)
+
+        def stretch(t, con, scaling_ratio):
+            return np.where(t < vel*con, t/vel, con + (t - vel*con) / scaling_ratio)
+        
+        stretched_n_frames = (con*vel + (total_time - con)*scaling_ratio) // thop + 1
+        stretched_t_mel = np.arange(stretched_n_frames) * thop + thop / 2
+        logging.info(f'stretched_n_frames: {stretched_n_frames}')
+        logging.info(f'stretched_t_mel: {stretched_t_mel.shape}')
 
         # 在start左边的mel帧数
-        start_left_mel_frames = (start - thop/2)//thop
-        if start_left_mel_frames > 64:
-            cut_left_mel_frames = start_left_mel_frames - 64
+        start_left_mel_frames = (start*vel - thop/2)//thop
+        if start_left_mel_frames > Config.fill:
+            cut_left_mel_frames = start_left_mel_frames - Config.fill
         else:
             cut_left_mel_frames = 0
+        logging.info(f'start_left_mel_frames: {start_left_mel_frames}')
+        logging.info(f'cut_left_mel_frames: {cut_left_mel_frames}')
+
         # 在length_req+con右边的mel帧数
-        mel_f=mel_render.shape[1]
-        end_right_mel_frames = mel_f - (length_req+con - thop/2)//thop
-        if end_right_mel_frames > 64:
-            cut_right_mel_frames = end_right_mel_frames - 64
+        end_right_mel_frames = stretched_n_frames - (length_req+con*vel - thop/2)//thop
+        if end_right_mel_frames > Config.fill:
+            cut_right_mel_frames = end_right_mel_frames - Config.fill
         else:
             cut_right_mel_frames = 0
-        # 截取mel帧
+        logging.info(f'end_right_mel_frames: {end_right_mel_frames}')
+        logging.info(f'cut_right_mel_frames: {cut_right_mel_frames}')
 
-        mel_render = mel_render[:, int(cut_left_mel_frames):int(mel_f-cut_right_mel_frames)]
+        stretched_t_mel = stretched_t_mel[int(cut_left_mel_frames):int(stretched_n_frames-cut_right_mel_frames)]
+        logging.info(f'stretched_t_mel: {stretched_t_mel.shape}')
 
-        f0_render = f0_render[int(cut_left_mel_frames):int(mel_f-cut_right_mel_frames)]
+        stretch_t_mel = np.clip(stretch(stretched_t_mel, con, scaling_ratio),0,t_area_mel_extract_hop_size[-1])
+        logging.info(f'stretch_t_mel: {stretch_t_mel.shape}')
 
-        wav_con = m2w(f0_render,mel_render)
-        render = wav_con[int(start*Config.sample_rate-Config.hop_size*cut_left_mel_frames):int((length_req+con)*Config.sample_rate-Config.hop_size*cut_left_mel_frames)]
+        new_start = start*vel - cut_left_mel_frames * thop
+        new_end = (length_req+con*vel) - cut_left_mel_frames * thop
+        logging.info(f'new_start: {new_start}')
+        logging.info(f'new_end: {new_end}')
+        logging.info(f'stretched_t_mel[0]: {stretched_t_mel[0]}')
+        logging.info(f'stretched_t_mel[-1]: {stretched_t_mel[-1]}')
+
+        mel_render = mel_interp(stretch_t_mel)
+        logging.info(f'mel_render: {mel_render.shape}')
+
+        t = np.arange(mel_render.shape[1]) * thop
+        logging.info(f't: {t.shape}')
+        logging.info('Calculating pitch.')
+        # Calculate pitch in MIDI note number terms
+        pitch = self.pitchbend / 100 + self.pitch
+        t_pitch = 60 * np.arange(len(pitch)) / (self.tempo * 96) + new_start
+        pitch_interp = interp.Akima1DInterpolator(t_pitch, pitch)
+        pitch_render = pitch_interp(np.clip(t, new_start, t_pitch[-1]))
+        f0_render = midi_to_hz(pitch_render)
+        logging.info(f'f0_render: {f0_render.shape}')
+
+        logging.info('Cutting mel and f0.')
+
+        if Config.model_type == "ckpt":
+
+            mel_render = torch.from_numpy(mel_render).unsqueeze(0).to(dtype=torch.float32)
+            f0_render = torch.from_numpy(f0_render).unsqueeze(0).to(dtype=torch.float32)
+            logging.info(f'mel_render: {mel_render.shape}')
+            logging.info(f'f0_render: {f0_render.shape}')
+
+            logging.info('Rendering audio.')
+
+            wav_con = vocoder.spec2wav_torch(mel_render.to(Config.device), f0 = f0_render.to(Config.device))
+            render = wav_con[int(new_start * Config.sample_rate):int(new_end * Config.sample_rate)].to('cpu').numpy()
+            logging.info(f'cut_l:{int(new_start * Config.sample_rate)}')
+            logging.info(f'cut_r:{len(wav_con)-int(new_end * Config.sample_rate)}')
+            logging.info(f'mel_l:{(int(new_start * Config.sample_rate)-256)//Config.hop_size}')
+            logging.info(f'mel_r:{(len(wav_con)-int(new_end * Config.sample_rate)-256)//Config.hop_size}')
+
+            logging.info(f'wav_con: {wav_con.shape}')
+            logging.info(f'render: {render.shape}')
+        elif Config.model_type == "onnx":
+            logging.info('Rendering audio.')
+            f0 = f0_render.astype(np.float32)
+            mel = mel_render.astype(np.float32)
+            #给mel和f0添加batched维度
+            mel = np.expand_dims(mel, axis=0).transpose(0, 2, 1)
+            f0 = np.expand_dims(f0, axis=0)
+            input_data = {'mel': mel,'f0': f0,}
+            output = ort_session.run(['waveform'], input_data)[0]
+            wav_con = output[0]
+
+            render = wav_con[int(new_start * Config.sample_rate):int(new_end * Config.sample_rate)]
+            logging.info(f'cut_l:{int(new_start * Config.sample_rate)}')
+            logging.info(f'cut_r:{len(wav_con)-int(new_end * Config.sample_rate)}')
+            logging.info(f'mel_l:{(int(new_start * Config.sample_rate)-256)//Config.hop_size}')
+            logging.info(f'mel_r:{(len(wav_con)-int(new_end * Config.sample_rate)-256)//Config.hop_size}')
+
+            logging.info(f'wav_con: {wav_con.shape}')
+            logging.info(f'render: {render.shape}')
+        else:
+            raise ValueError(f"Unsupported model type: {Config.model_type}")
+
         save_wav(self.out_file, render)
 
 def split_arguments(input_string):
     # Regular expression to match two file paths at the beginning
     otherargs = input_string.split(' ')[-11:]
     file_path_strings = ' '.join(input_string.split(' ')[:-11])
-    print(file_path_strings)
+
     first_file, second_file = file_path_strings.split('.wav ')
     return [first_file+".wav", second_file] + otherargs
 
 class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        print(self.requestline)
+        logging.info(self.requestline)
         self.send_response(200)
         self.end_headers()
 
@@ -614,10 +641,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers['Content-Length'])
         post_data = self.rfile.read(content_length)
         post_data_string = post_data.decode('utf-8')
-        print("传输ed data: " + post_data_string)
+        logging.info(f"post_data_string: {post_data_string}")
         #try:
         sliced = split_arguments(post_data_string)
-        print("------------sliced",sliced)
+
         Resampler(*sliced)
         '''
         except Exception as e:
@@ -632,7 +659,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 def run(server_class=HTTPServer, handler_class=RequestHandler, port=8572):
     server_address = ('', port)
     httpd = server_class(server_address, handler_class)
-    print(f'Starting http server on port {port}...')
+    logging.info(f'Starting http server on port {port}...')
     httpd.serve_forever()
 
 if __name__ == '__main__':
