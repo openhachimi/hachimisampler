@@ -1,21 +1,16 @@
 import logging
 logging.basicConfig(format='%(message)s', level=logging.INFO)
-import sys
 import os
-import pyworld as world # Vocoder
 import numpy as np # Numpy <3
-from numba import njit, vectorize, float64, optional # JIT compilation stuff (and ufuncs)
 import soundfile as sf # WAV read + write
-import scipy.signal as signal # for filtering
 import scipy.interpolate as interp # Interpolator for feats
-import scipy.ndimage as ndimage
 import resampy # Resampler (as in sampling rate stuff)
 from pathlib import Path # path manipulation
 import re
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import onnxruntime
-from waveAnalyzer import MelAnalysis, F0Analyzer,resample_align_curve
+from wav2mel import PitchAdjustableMelSpectrogram
 import dataclasses
 import soundfile as sf
 import numpy as np
@@ -45,13 +40,7 @@ optional arguments:
 
 notes = {'C' : 0, 'C#' : 1, 'D' : 2, 'D#' : 3, 'E' : 4, 'F' : 5, 'F#' : 6, 'G' : 7, 'G#' : 8, 'A' : 9, 'A#' : 10, 'B' : 11} # Note names lol
 note_re = re.compile(r'([A-G]#?)(-?\d+)') # Note Regex for conversion
-default_fs = 44100 # UTAU only really likes 44.1khz
-fft_size = 2048
 cache_ext = '.hjm.npz' # cache file extension
-
-# Giving it better range
-f0_floor = 20.0 
-f0_ceil = 1600
 
 # Flags
 flags = ['fe', 'fl', 'fo', 'fv', 'fp', 've', 'vo', 'g', 't', 'A', 'B', 'G', 'P', 'S', 'p', 'R', 'D', 'C', 'Z']
@@ -61,36 +50,43 @@ flag_re = re.compile(flag_re)
 
 @dataclasses.dataclass
 class Config:
-    sampling_rate: int = 44100
+    sample_rate: int = 44100  # UTAU only really likes 44.1khz
     win_size: int = 2048
     hop_size: int = 512
+    extract_hop_size: int = 128
     n_mels: int = 128
     n_fft: int = 2048
     mel_fmin: float = 40
-    mel_fmax: float = 16000.0
+    mel_fmax: float = 16000
     f0_extractor: str = 'parselmouth'
     f0_min: float = 65
     f0_max: float = 1600
     vocoder_path: str = r"pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx"
 
+ort_session = onnxruntime.InferenceSession(Config.vocoder_path,providers=['DmlExecutionProvider', 'CPUExecutionProvider'])
 
-melAnalysis = MelAnalysis(
-    sampling_rate=Config.sampling_rate, 
-    win_size=Config.win_size, 
-    hop_size=Config.hop_size, 
-    n_mels=Config.n_mels, 
+melAnalysis_extract_hop_size = PitchAdjustableMelSpectrogram(
+    sample_rate=Config.sample_rate, 
     n_fft=Config.n_fft, 
-    mel_fmin=Config.mel_fmin, 
-    mel_fmax=Config.mel_fmax
+    win_length=Config.win_size, 
+    hop_length=Config.extract_hop_size, 
+    f_min=Config.mel_fmin, 
+    f_max=Config.mel_fmax,
+    n_mels=Config.n_mels
     )
 
-f0Analyzer = F0Analyzer(
-    sampling_rate = Config.sampling_rate,
-    f0_extractor = Config.f0_extractor,
-    hop_size = Config.hop_size,
-    f0_min = Config.f0_min,
-    f0_max = Config.f0_max
+melAnalysis = PitchAdjustableMelSpectrogram(
+    sample_rate=Config.sample_rate, 
+    n_fft=Config.n_fft, 
+    win_length=Config.win_size, 
+    hop_length=Config.hop_size, 
+    f_min=Config.mel_fmin, 
+    f_max=Config.mel_fmax,
+    n_mels=Config.n_mels
     )
+
+def dynamic_range_compression_torch(x, C=1, clip_val=1e-9):
+    return torch.log(torch.clamp(x, min=clip_val) * C)
 
 #mel to wave
 def m2w(f0,mel):
@@ -101,7 +97,7 @@ def m2w(f0,mel):
     '''
 
     # 加载vocoder模型
-    ort_session = onnxruntime.InferenceSession(Config.vocoder_path)
+    print(onnxruntime.get_available_providers(),"00000000000") 
 
     # 准备输入
     #mel从tensor转numpy
@@ -129,48 +125,9 @@ def m2w(f0,mel):
     return wave
 
 
-# Utility functions
-@vectorize([float64(float64, float64, float64)], nopython=True)
-def smoothstep(edge0, edge1, x):
-    """Smoothstep function from GLSL that works with numpy arrays."""
-    x = (x - edge0) / (edge1 - edge0)
-    if x < 0:
-        x = 0
-    elif x > 1:
-        x = 1
-    return 3*x*x - 2*x*x*x
 
-@vectorize([float64(float64, float64, float64)], nopython=True)
-def clip(x, x_min, x_max):
-    """Clips function. Faster than np.clip somehow"""
-    if x < x_min:
-        return x_min
-    if x > x_max:
-        return x_max
-    return x
 
-@vectorize([float64(float64, float64)], nopython=True)
-def bias(x, a):
-    """Element-wise Schlick bias function."""
-    if a == 0:
-        return 0
-    if a == 1:
-        return 1
-    return x / ((1 / a - 2) * (1 - x) + 1)
 
-def highpass(x, fs=44100, cutoff=3000, order=1):
-    """Butterworth highpass with doubled order because of sosfiltfilt."""
-    nyq = 0.5 * fs
-    cut = cutoff / nyq
-    sos = signal.butter(order, cut, btype='high', output='sos')
-    return signal.sosfiltfilt(sos, x)
-
-def lowpass(x, fs=44100, cutoff=16000, order=1):
-    """Butterworth lowpass with doubled order because of sosfiltfilt."""
-    nyq = 0.5 * fs
-    cut = cutoff / nyq
-    sos = signal.butter(order, cut, btype='low', output='sos')
-    return signal.sosfiltfilt(sos, x)
 
 # Pitch string interpreter
 def to_uint6(b64):
@@ -280,9 +237,6 @@ def midi_to_hz(x):
     """MIDI note number to Hertz using equal temperament. A4 = 440 Hz."""
     return 440 * np.exp2((x - 69) / 12)
 
-##def hz_to_midi(x):
-##    return 12 * np.log2(x / 440) + 69
-
 # WAV read/write
 def read_wav(loc):
     """Read audio files supported by soundfile and resample to 44.1kHz if needed. Mixes down to mono if needed.
@@ -316,8 +270,8 @@ def read_wav(loc):
         # Average all channels... Probably not too good for formats bigger than stereo
         x = np.mean(x, axis=1)
 
-    if fs != default_fs:
-        x = resampy.resample(x, fs, default_fs)
+    if fs != Config.sample_rate:
+        x = resampy.resample(x, fs, Config.sample_rate)
 
     return x
 
@@ -337,60 +291,10 @@ def save_wav(loc, x):
     None
     """
     try:
-        sf.write(str(loc), x, default_fs, 'PCM_16')
+        sf.write(str(loc), x, Config.sample_rate, 'PCM_16')
     except Exception as e:
         logging.error(f"Error saving WAV file: {e}")
 
-# Processing WORLD things
-@njit(float64(float64[:], optional(float64), optional(float64)))
-def _jit_base_frq(f0, f0_min, f0_max):
-    q = 0
-    avg_frq = 0
-    tally = 0
-    N = len(f0)
-
-    if f0_min is None:
-        f0_min = f0_floor
-
-    if f0_max is None:
-        f0_max = f0_ceil
-    
-    for i in range(N):
-        if f0[i] >= f0_min and f0[i] <= f0_max:
-            if i < 1:
-                q = f0[i+1] - f0[i]
-            elif i == N - 1:
-                q = f0[i] - f0[i-1]
-            else:
-                q = (f0[i+1] - f0[i-1]) / 2
-            weight = 2 ** (-q * q)
-            avg_frq += f0[i] * weight
-            tally += weight
-
-    if tally > 0:
-        avg_frq /= tally
-    return avg_frq
-
-def base_frq(f0, f0_min=None, f0_max=None):
-    """Get average F0 with a stronger bias on flatter areas. 
-
-    Parameters
-    ----------
-    f0 : list or ndarray
-        Array of F0 values.
-
-    f0_min : float, optional
-        Lower F0 limit.
-
-    f0_max : float, optional
-        Upper F0 limit.
-
-    Returns
-    -------
-    float
-        Average F0.
-    """
-    return _jit_base_frq(f0, f0_min, f0_max)
 
 class Resampler:
     """
@@ -508,6 +412,7 @@ class Resampler:
         self.modulation = float(modulation)
         self.tempo = float(tempo[1:])
         self.pitchbend = pitch_string_to_cents(pitch_string)
+        print('****pitchbend', self.pitchbend)
 
         self.render()
     
@@ -553,7 +458,7 @@ class Resampler:
 
         return features
     def generate_features(self, features_path):
-        """Generates WORLD features and saves it for later.
+        """Generates PC-NSF-hifigan features and saves it for later.
 
         Parameters
         ----------
@@ -563,21 +468,20 @@ class Resampler:
         Returns
         -------
         features : dict
-            A dictionary of the F0, MGC, BAP, and average F0.
+            A dictionary of the MEL.
         """
         x = read_wav(self.in_file)
         logging.info('Generating F0.')
 
-        mel = melAnalysis(torch.from_numpy(x).to(dtype=torch.float32), 0, 1).numpy()
-        f0 = f0Analyzer(torch.from_numpy(x).to(dtype=torch.float32), n_frames=mel.shape[1])[0]
-        base_f0 = base_frq(f0)       
+        mel_extract_hop_size = melAnalysis_extract_hop_size(torch.from_numpy(x).to(dtype=torch.float32).unsqueeze(0), 0, 1).squeeze()
+        print('**********mel_extract_hop_size', mel_extract_hop_size.shape)
+        mel_extract_hop_size = dynamic_range_compression_torch(mel_extract_hop_size).numpy()
+
+    
         logging.info('Saving features.')
         
-        features = {'base' : base_f0, 'f0' : f0, 'mel' : mel}
+        features = {'mel_extract_hop_size' : mel_extract_hop_size}
         np.savez_compressed(features_path, **features)
-
-        if len(x)//Config.hop_size != mel.shape[1]:
-            logging.warning(f'Mel shape {mel.shape} does not match audio length {len(x)//Config.hop_size}.')
 
         return features
     def resample(self, features):
@@ -598,23 +502,20 @@ class Resampler:
             return
         
         mod = self.modulation / 100
+        print("--------mod", mod)
         
         self.out_file = Path(self.out_file)
         wave = read_wav(Path(self.in_file))
 
         logging.info('hachiming')
-        base_f0 = features['base']
-        f0 = features['f0']
-        f0[f0 == 0] = base_f0
-        f0_off = f0 - base_f0
-        print('f0', f0.shape)
-        mel = features['mel']
+        mel_extract_hop_size = features['mel_extract_hop_size']
+        print('**********mel_extract_hop_size', mel_extract_hop_size.shape)
 
-        thop = Config.hop_size / Config.sampling_rate
+        thop_extract_hop_size = Config.extract_hop_size / Config.sample_rate
+        thop = Config.hop_size / Config.sample_rate
 
-        t_area_f0 = np.arange(len(f0)) * thop
-        t_area_mel = t_area_f0 + thop / 2
-        tatal_time = t_area_f0[-1] + thop
+        t_area_mel_extract_hop_size = np.arange(mel_extract_hop_size.shape[1]) * thop_extract_hop_size + thop_extract_hop_size / 2
+        tatal_time = t_area_mel_extract_hop_size[-1] + thop_extract_hop_size/2
 
         offset = self.offset / 1000 # start time
         cutoff = self.cutoff / 1000 # end time
@@ -634,11 +535,9 @@ class Resampler:
         print('--------wav_len', len(wave)/44100)
         logging.info('Calculating timing.') 
 
-
         logging.info('Preparing interpolators.')
         # Make interpolators to render new areas
-        f0_off_interp = interp.UnivariateSpline(t_area_f0, f0_off, s=0, ext='const')
-        mel_interp = interp.Akima1DInterpolator(t_area_mel, mel, axis=1)
+        mel_interp = interp.Akima1DInterpolator(t_area_mel_extract_hop_size, mel_extract_hop_size, axis=1)
 
         length_req = self.length / 1000
         print('--------length_req', length_req)
@@ -652,33 +551,27 @@ class Resampler:
                 return np.where(t < con, t, con + (t - con) / scaling_ratio)
             
             stretched_n_frames = (con + (tatal_time - con)*scaling_ratio) // thop + 1
-            stretched_t_f0 = np.arange(stretched_n_frames) * thop
-            stretched_t_mel = stretched_t_f0 + thop / 2
+            stretched_t_mel = np.arange(stretched_n_frames) * thop + thop / 2
 
-            print('stretched_t_f0', stretched_t_f0.shape)
+            stretch_t_mel = np.clip(stretch(stretched_t_mel, con, scaling_ratio),0,t_area_mel_extract_hop_size[-1])
 
-            stretch_t_f0 = clip(stretch(stretched_t_f0, con, scaling_ratio),0,t_area_f0[-1])
-            stretch_t_mel = clip(stretch(stretched_t_mel, con, scaling_ratio),0,t_area_mel[-1])
-
-            print('stretch_t_f0', stretch_t_f0.shape)
-
-            f0_off_render = f0_off_interp(stretch_t_f0)
             mel_render = mel_interp(stretch_t_mel)
-
-            print('f0_off_render', f0_off_render.shape)
         else:
             print('stretch_length >= length_req, no stretching needed.')
             scaling_ratio = 1
-            f0_off_render = f0_off
-            mel_render = mel
             
-        t = np.arange(len(f0_off_render)) * thop
+            mel_render = melAnalysis(torch.from_numpy(wave).to(dtype=torch.float32).unsqueeze(0), 0, 1).squeeze()
+            mel_render = dynamic_range_compression_torch(mel_render).numpy()
+            
+        t = np.arange(mel_render.shape[1]) * thop
         # Calculate pitch in MIDI note number terms
         pitch = self.pitchbend / 100 + self.pitch
         t_pitch = 60 * np.arange(len(pitch)) / (self.tempo * 96) + start
         pitch_interp = interp.Akima1DInterpolator(t_pitch, pitch)
-        pitch_render = pitch_interp(clip(t, start, t_pitch[-1]))
-        f0_render = midi_to_hz(pitch_render) + f0_off_render * mod
+        pitch_render = pitch_interp(np.clip(t, start, t_pitch[-1]))
+        f0_render = midi_to_hz(pitch_render)
+        print('f0_render', f0_render.shape)
+        print('mel_render', mel_render.shape)
 
         # 在start左边的mel帧数
         start_left_mel_frames = (start - thop/2)//thop
@@ -700,7 +593,7 @@ class Resampler:
         f0_render = f0_render[int(cut_left_mel_frames):int(mel_f-cut_right_mel_frames)]
 
         wav_con = m2w(f0_render,mel_render)
-        render = wav_con[int(start*Config.sampling_rate-Config.hop_size*cut_left_mel_frames):int((length_req+con)*Config.sampling_rate-Config.hop_size*cut_left_mel_frames)]
+        render = wav_con[int(start*Config.sample_rate-Config.hop_size*cut_left_mel_frames):int((length_req+con)*Config.sample_rate-Config.hop_size*cut_left_mel_frames)]
         save_wav(self.out_file, render)
 
 def split_arguments(input_string):
@@ -724,6 +617,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         print("传输ed data: " + post_data_string)
         #try:
         sliced = split_arguments(post_data_string)
+        print("------------sliced",sliced)
         Resampler(*sliced)
         '''
         except Exception as e:
