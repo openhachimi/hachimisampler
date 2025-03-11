@@ -9,8 +9,9 @@ hachimisampler was based on [straycat resampler](https://github.com/UtaUtaUtau/s
 ```
 pip install numpy scipy resampy pyworld torch onnxruntime praat-parselmouth
 ```
- 2. Download the [release](https://github.com/mtfotto/hachimisampler/releases) unpack it and run the 'hachisampler.py'.
- 3. Open the UTAU and change the resampler to the path of `hachimisampler.exe`.
+2. Download the CUDA version of PyTorch from the official website. (If you are sure that you will only use the ONNX version, then you can download the CPU version of PyTorch)
+3. Download the [release](https://github.com/mtfotto/hachimisampler/releases) unpack it and run the 'hachisampler.py'.
+4. Open the UTAU and change the resampler to the path of `hachimisampler.exe`.
 # Thanks
 - [yjzxkxdn](https://github.com/yjzxkxdn)
 - [openvpi](https://github.com/openvpi) for the pc-nsf-hifigan

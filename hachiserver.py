@@ -11,13 +11,11 @@ import soundfile as sf # WAV read + write
 import scipy.interpolate as interp # Interpolator for feats
 import resampy # Resampler (as in sampling rate stuff)
 from http.server import BaseHTTPRequestHandler, HTTPServer
-import onnxruntime
 
-from nsf_hifigan import NsfHifiGAN
 from wav2mel import PitchAdjustableMelSpectrogram
 
 
-version = '0.0.2-ccb'
+version = '0.0.3-ccb'
 help_string = '''usage: 🐱haicmimisampler🐱 in_file out_file pitch velocity [flags] [offset] [length] [consonant] [cutoff] [volume] [modulation] [tempo] [pitch_string]
 
 Resamples using the PC-NSF-HIFIGAN Vocoder.
@@ -29,7 +27,7 @@ arguments:
 \tvelocity\tThe consonant velocity of the render.
 
 optional arguments:
-\tflags\t\tThe flags of the render.
+\tflags\t\tThe flags of the render. But now, it's not implemented yet. 
 \toffset\t\tThe offset from the start of the render area of the sample. (default: 0)
 \tlength\t\tThe length of the stretched area in milliseconds. (default: 1000)
 \tconsonant\tThe unstretched area of the render in milliseconds. (default: 0)
@@ -52,53 +50,61 @@ flag_re = re.compile(flag_re)
 @dataclasses.dataclass
 class Config:
     sample_rate: int = 44100  # UTAU only really likes 44.1khz
-    win_size: int = 2048
-    hop_size: int = 512
-    extract_hop_size: int = 128
-    n_mels: int = 128
-    n_fft: int = 2048
-    mel_fmin: float = 40
-    mel_fmax: float = 16000
-    f0_extractor: str = 'parselmouth'
-    f0_min: float = 65
-    f0_max: float = 1600
+    win_size: int = 2048     # 必须和vocoder训练时一致   
+    hop_size: int = 512      # 必须和vocoder训练时一致     
+    extract_hop_size: int = 128 # 插值前的hopsize,可以适当调小改善长音的电音
+    n_mels: int = 128        # 必须和vocoder训练时一致 
+    n_fft: int = 2048        # 必须和vocoder训练时一致 
+    mel_fmin: float = 40     # 必须和vocoder训练时一致 
+    mel_fmax: float = 16000  # 必须和vocoder训练时一致 
     fill: int = 6
     vocoder_path: str = r"pc_nsf_hifigan_44.1k_hop512_128bin_2025.02\model.ckpt"
-    model_type: str = 'onnx' # or 'ckpt' 
+    model_type: str = 'ckpt' # or 'onnx'
+    wave_norm: bool = False
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-if Config.model_type == 'ckpt':
-    vocoder = NsfHifiGAN(model_path=Path(Config.vocoder_path))
-    vocoder.to_device(Config.device)
-    logging.info(f'Loaded HifiGAN: {vocoder}')
-elif Config.model_type == 'onnx':
-    ort_session = onnxruntime.InferenceSession(Config.vocoder_path,providers=['DmlExecutionProvider', 'CPUExecutionProvider'])
-    logging.info(f'Loaded HifiGAN: {Config.vocoder_path}')
-else:
-    raise ValueError(f'Invalid model type: {Config.model_type}')
-
-melAnalysis_extract_hop_size = PitchAdjustableMelSpectrogram(
-    sample_rate=Config.sample_rate, 
-    n_fft=Config.n_fft, 
-    win_length=Config.win_size, 
-    hop_length=Config.extract_hop_size, 
-    f_min=Config.mel_fmin, 
-    f_max=Config.mel_fmax,
-    n_mels=Config.n_mels
-    )
-
-melAnalysis = PitchAdjustableMelSpectrogram(
-    sample_rate=Config.sample_rate, 
-    n_fft=Config.n_fft, 
-    win_length=Config.win_size, 
-    hop_length=Config.hop_size, 
-    f_min=Config.mel_fmin, 
-    f_max=Config.mel_fmax,
-    n_mels=Config.n_mels
-    )
 
 def dynamic_range_compression_torch(x, C=1, clip_val=1e-9):
     return torch.log(torch.clamp(x, min=clip_val) * C)
+
+def loudness_norm(
+    audio: np.ndarray, rate: int, peak=-1.0, loudness=-23.0, block_size=0.400
+) -> np.ndarray:
+    """
+    Perform loudness normalization (ITU-R BS.1770-4) on audio files.
+
+    Args:
+        audio: audio data
+        rate: sample rate
+        peak: peak normalize audio to N dB. Defaults to -1.0.
+        loudness: loudness normalize audio to N dB LUFS. Defaults to -23.0.
+        block_size: block size for loudness measurement. Defaults to 0.400. (400 ms)
+
+    Returns:
+        loudness normalized audio
+    """
+
+    # peak normalize audio to [peak] dB
+    original_length = len(audio)
+    # Check if the audio is shorter than block_size and pad if necessary
+    if original_length < int(rate * block_size):
+        padding_length = int(rate * block_size) - original_length
+        audio = np.pad(audio, (0, padding_length), mode='reflect')
+    
+    # Peak normalize audio to [peak] dB
+    audio = pyln.normalize.peak(audio, peak)
+
+    # Measure the loudness first
+    meter = pyln.Meter(rate, block_size=block_size)  # create BS.1770 meter
+    _loudness = meter.integrated_loudness(audio)
+
+    # Loudness normalize audio to [loudness] LUFS
+    audio = pyln.normalize.loudness(audio, _loudness, loudness)
+    
+    # If original audio was shorter than block_size, crop it back to its original length
+    if original_length < int(rate * block_size):
+        audio = audio[:original_length]
+    
+    return audio
 
 # Pitch string interpreter
 def to_uint6(b64):
@@ -441,27 +447,38 @@ class Resampler:
             A dictionary of the MEL.
         """
         x = read_wav(self.in_file)
-        logging.info('Generating F0.')
 
-        mel_extract_hop_size = melAnalysis_extract_hop_size(torch.from_numpy(x).to(dtype=torch.float32).unsqueeze(0), 0, 1).squeeze()
+        wave_max = np.max(np.abs(x))
+        if wave_max >= 0.5:
+            # 先缩小到最大0.5
+            scale = 0.5 / wave_max
+            x = x * scale
+        else:
+            logging.info('Wave is already small enough.')
+            scale = 1.0
+
+
+        mel_extract_hop_size = melAnalysis_extract_hop_size(
+            torch.from_numpy(x).to(dtype=torch.float32, device=Config.device).unsqueeze(0),
+            0, 1).squeeze()
         logging.info(f'mel_extract_hop_size: {mel_extract_hop_size.shape}')
-        mel_extract_hop_size = dynamic_range_compression_torch(mel_extract_hop_size).numpy()
+        mel_extract_hop_size = dynamic_range_compression_torch(mel_extract_hop_size).cpu().numpy()
 
     
         logging.info('Saving features.')
         
-        features = {'mel_extract_hop_size' : mel_extract_hop_size}
+        features = {'mel_extract_hop_size' : mel_extract_hop_size, 'scale' : scale}
         np.savez_compressed(features_path, **features)
 
         return features
     def resample(self, features):
         """
-        Renders a WAV file using the passed WORLD features.
+        Renders a WAV file using the passed MEL features.
 
         Parameters
         ----------
         features : dict
-            A dictionary of the F0, MGC, BAP, and average F0.
+            A dictionary of the mel.
  
         Returns
         -------
@@ -477,6 +494,9 @@ class Resampler:
         self.out_file = Path(self.out_file)
         wave = read_wav(Path(self.in_file))
         logging.info(f'wave: {wave.shape}')
+
+        scale = features['scale']
+        logging.info(f'scale: {scale}')
 
         logging.info('hachiming')
         mel_extract_hop_size = features['mel_extract_hop_size']
@@ -620,6 +640,14 @@ class Resampler:
             logging.info(f'render: {render.shape}')
         else:
             raise ValueError(f"Unsupported model type: {Config.model_type}")
+        
+        if Config.wave_norm:
+            render = loudness_norm(render, Config.sample_rate, peak = -1, loudness=-14.0, block_size=0.100)
+        else:
+            render = render / scale
+            new_max = np.max(np.abs(render))
+            if new_max > 1:
+                render = render / new_max
 
         save_wav(self.out_file, render)
 
@@ -663,7 +691,47 @@ def run(server_class=HTTPServer, handler_class=RequestHandler, port=8572):
     httpd.serve_forever()
 
 if __name__ == '__main__':
+    if Config.wave_norm:
+        import pyloudnorm as pyln
     logging.info(f'hachisampler {version}')
+
+    # Load HifiGAN
+    vocoder_path = Path(Config.vocoder_path)
+    onnx_default_path = Path(r"pc_nsf_hifigan_44.1k_hop512_128bin_2025.02.onnx")
+    ckpt_default_path = Path(r"pc_nsf_hifigan_44.1k_hop512_128bin_2025.02\model.ckpt")
+    if not vocoder_path.exists():
+        if ckpt_default_path.exists():
+            vocoder_path = ckpt_default_path
+        elif onnx_default_path.exists():
+            vocoder_path = onnx_default_path
+        else:
+            raise FileNotFoundError("No HifiGAN model found.")
+
+    if vocoder_path.suffix == '.ckpt':
+        from nsf_hifigan import NsfHifiGAN
+        Config.model_type = 'ckpt'
+        vocoder = NsfHifiGAN(model_path=vocoder_path)
+        vocoder.to_device(Config.device)
+        logging.info(f'Loaded HifiGAN: {vocoder}')
+    elif vocoder_path.suffix == '.onnx':
+        import onnxruntime
+        Config.model_type = 'onnx'
+        ort_session = onnxruntime.InferenceSession(str(vocoder_path),providers=['DmlExecutionProvider', 'CPUExecutionProvider'])
+        logging.info(f'Loaded HifiGAN: {vocoder_path}')
+    else:
+        Config.model_type = vocoder_path.suffix
+        raise ValueError(f'Invalid model type: {Config.model_type}')
+
+    melAnalysis_extract_hop_size = PitchAdjustableMelSpectrogram(
+        sample_rate=Config.sample_rate, 
+        n_fft=Config.n_fft, 
+        win_length=Config.win_size, 
+        hop_length=Config.extract_hop_size, 
+        f_min=Config.mel_fmin, 
+        f_max=Config.mel_fmax,
+        n_mels=Config.n_mels
+        )
+    # Start server
     try:
         run()
     except Exception as e:

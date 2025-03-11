@@ -4,10 +4,10 @@
 ## 使用方法
 python 3.10をインストールして、以下のコマンドを実行する。（コンダを推奨）
 ```
-pip install numpy scipy resampy pyworld torch onnxruntime praat-parselmouth
+pip install numpy scipy resampy pyworld torch onnxruntime praat-parselmouth soundfile pyloudnorm
 ```
- 2. [リリース](https://github.com/mtfotto/hachimisampler/releases)をダウンロードして解凍し、「hachiserver.py 」を実行してください。
- 3. UTAUを開き、リサンプラーをhachimisampler.exeのパスに変更する。
-# Thanks：
-- [yjzxkxdn](https://github.com/yjzxkxdn)
+2. 公式ウェブサイトからPyTorchのCUDA版をダウンロードしてください。（もしONNX版のみを使用することが確実であれば、CPU版のPyTorchをダウンロードすることができます）
+3. [リリース](https://github.com/mtfotto/hachimisampler/releases)をダウンロードして解凍し、「hachiserver.py 」を実行してください。
+4. UTAUを開き、リサンプラーをhachimisampler.exeのパスに変更する。
+# 謝辞：
 - [openvpi](https://github.com/openvpi) for the pc-nsf-hifigan
