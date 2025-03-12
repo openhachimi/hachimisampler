@@ -3,8 +3,8 @@
 # hachimisampler
  A brand new resampler for utau based on [pc-nsf-hifigan](https://github.com/openvpi/vocoders).
 ## Why it's named hachimisampler?
-hachimisampler was based on [straycat resampler](https://github.com/UtaUtaUtau/straycat) but uses pc-nsf-hifigan instead of world and the hachimi(ハチミ) means cat in Japanese.
-注意：hachimisampler最初用于制作哈基米类人力vocaloid，但是最近的几次更新使它能够调正常utau虚拟歌手，考虑到命名问题我们决定开一个调utau虚拟歌手的新仓库，叫hifisampler。hachimisampler将专注于人力vocaloid 添加了如原声大碟这样的功能 请根据你的需求选用
+hachimisampler was based on [straycat resampler](https://github.com/UtaUtaUtau/straycat) but uses pc-nsf-hifigan instead of world and the hachimi(ハチミ) means cat in Japanese.    
+注意：hachimisampler最初用于制作哈基米类人力vocaloid，但是最近的几次更新使它能够调正常utau虚拟歌手，考虑到命名问题我们决定开一个调utau虚拟歌手的新仓库，叫[hifisampler](https://github.com/openhachimi/hifisampler)。hachimisampler将继续专注于人力vocaloid 添加了如原声大碟这样的功能 请根据你的需求选用
 ## how to use? 
 1. Install python 3.10 then run the commoand
 ```
