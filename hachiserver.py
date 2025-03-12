@@ -52,7 +52,7 @@ class Config:
     sample_rate: int = 44100  # UTAU only really likes 44.1khz
     win_size: int = 2048     # 必须和vocoder训练时一致   
     hop_size: int = 512      # 必须和vocoder训练时一致     
-    extract_hop_size: int = 128 # 插值前的hopsize,可以适当调小改善长音的电音
+    origin_hop_size: int = 128 # 插值前的hopsize,可以适当调小改善长音的电音
     n_mels: int = 128        # 必须和vocoder训练时一致 
     n_fft: int = 2048        # 必须和vocoder训练时一致 
     mel_fmin: float = 40     # 必须和vocoder训练时一致 
@@ -60,7 +60,7 @@ class Config:
     fill: int = 6
     vocoder_path: str = r"pc_nsf_hifigan_44.1k_hop512_128bin_2025.02\model.ckpt"
     model_type: str = 'ckpt' # or 'onnx'
-    wave_norm: bool = False
+    wave_norm: bool = True
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def dynamic_range_compression_torch(x, C=1, clip_val=1e-9):
@@ -446,28 +446,28 @@ class Resampler:
         features : dict
             A dictionary of the MEL.
         """
-        x = read_wav(self.in_file)
+        wave = read_wav(self.in_file)
 
-        wave_max = np.max(np.abs(x))
+        wave_max = np.max(np.abs(wave))
         if wave_max >= 0.5:
+            logging.info('The audio volume is too high. Scaling down to 0.5')
             # 先缩小到最大0.5
             scale = 0.5 / wave_max
-            x = x * scale
+            wave = wave * scale
         else:
-            logging.info('Wave is already small enough.')
+            logging.info('The audio volume is already low enough')
             scale = 1.0
 
-
-        mel_extract_hop_size = melAnalysis_extract_hop_size(
-            torch.from_numpy(x).to(dtype=torch.float32, device=Config.device).unsqueeze(0),
+        mel_origin = melAnalysis(
+            torch.from_numpy(wave).to(dtype=torch.float32, device=Config.device).unsqueeze(0),
             0, 1).squeeze()
-        logging.info(f'mel_extract_hop_size: {mel_extract_hop_size.shape}')
-        mel_extract_hop_size = dynamic_range_compression_torch(mel_extract_hop_size).cpu().numpy()
+        logging.info(f'mel_origin: {mel_origin.shape}')
+        mel_origin = dynamic_range_compression_torch(mel_origin).cpu().numpy()
 
     
         logging.info('Saving features.')
         
-        features = {'mel_extract_hop_size' : mel_extract_hop_size, 'scale' : scale}
+        features = {'mel_origin' : mel_origin, 'scale' : scale}
         np.savez_compressed(features_path, **features)
 
         return features
@@ -499,17 +499,17 @@ class Resampler:
         logging.info(f'scale: {scale}')
 
         logging.info('hachiming')
-        mel_extract_hop_size = features['mel_extract_hop_size']
-        logging.info(f'mel_extract_hop_size: {mel_extract_hop_size.shape}')
+        mel_origin = features['mel_origin']
+        logging.info(f'mel_origin: {mel_origin.shape}')
 
-        thop_extract_hop_size = Config.extract_hop_size / Config.sample_rate
+        thop_origin = Config.origin_hop_size / Config.sample_rate
         thop = Config.hop_size / Config.sample_rate
-        logging.info(f'thop_extract_hop_size: {thop_extract_hop_size}')
+        logging.info(f'thop_origin: {thop_origin}')
         logging.info(f'thop: {thop}')
 
-        t_area_mel_extract_hop_size = np.arange(mel_extract_hop_size.shape[1]) * thop_extract_hop_size + thop_extract_hop_size / 2
-        total_time = t_area_mel_extract_hop_size[-1] + thop_extract_hop_size/2
-        logging.info(f"t_area_mel_extract_hop_size: {t_area_mel_extract_hop_size.shape}")
+        t_area_origin = np.arange(mel_origin.shape[1]) * thop_origin + thop_origin / 2
+        total_time = t_area_origin[-1] + thop_origin/2
+        logging.info(f"t_area_mel_origin: {t_area_origin.shape}")
         logging.info(f"total_time: {total_time}")
 
         vel = np.exp2(1 - self.velocity / 100)
@@ -532,7 +532,7 @@ class Resampler:
 
         logging.info('Preparing interpolators.')
         # Make interpolators to render new areas
-        mel_interp = interp.interp1d(t_area_mel_extract_hop_size, mel_extract_hop_size, axis=1)
+        mel_interp = interp.interp1d(t_area_origin, mel_origin, axis=1)
 
         length_req = self.length / 1000
         stretch_length = end - con
@@ -555,7 +555,7 @@ class Resampler:
         logging.info(f'stretched_t_mel: {stretched_t_mel.shape}')
 
         # 在start左边的mel帧数
-        start_left_mel_frames = (start*vel - thop/2)//thop
+        start_left_mel_frames = (start*vel + thop/2)//thop
         if start_left_mel_frames > Config.fill:
             cut_left_mel_frames = start_left_mel_frames - Config.fill
         else:
@@ -564,7 +564,7 @@ class Resampler:
         logging.info(f'cut_left_mel_frames: {cut_left_mel_frames}')
 
         # 在length_req+con右边的mel帧数
-        end_right_mel_frames = stretched_n_frames - (length_req+con*vel - thop/2)//thop
+        end_right_mel_frames = stretched_n_frames - (length_req+con*vel + thop/2)//thop
         if end_right_mel_frames > Config.fill:
             cut_right_mel_frames = end_right_mel_frames - Config.fill
         else:
@@ -575,7 +575,7 @@ class Resampler:
         stretched_t_mel = stretched_t_mel[int(cut_left_mel_frames):int(stretched_n_frames-cut_right_mel_frames)]
         logging.info(f'stretched_t_mel: {stretched_t_mel.shape}')
 
-        stretch_t_mel = np.clip(stretch(stretched_t_mel, con, scaling_ratio),0,t_area_mel_extract_hop_size[-1])
+        stretch_t_mel = np.clip(stretch(stretched_t_mel, con, scaling_ratio),0,t_area_origin[-1])
         logging.info(f'stretch_t_mel: {stretch_t_mel.shape}')
 
         new_start = start*vel - cut_left_mel_frames * thop
@@ -614,8 +614,8 @@ class Resampler:
             render = wav_con[int(new_start * Config.sample_rate):int(new_end * Config.sample_rate)].to('cpu').numpy()
             logging.info(f'cut_l:{int(new_start * Config.sample_rate)}')
             logging.info(f'cut_r:{len(wav_con)-int(new_end * Config.sample_rate)}')
-            logging.info(f'mel_l:{(int(new_start * Config.sample_rate)-256)//Config.hop_size}')
-            logging.info(f'mel_r:{(len(wav_con)-int(new_end * Config.sample_rate)-256)//Config.hop_size}')
+            logging.info(f'mel_l:{(int(new_start * Config.sample_rate)+256)//Config.hop_size}')
+            logging.info(f'mel_r:{(len(wav_con)-int(new_end * Config.sample_rate)+256)//Config.hop_size}')
 
             logging.info(f'wav_con: {wav_con.shape}')
             logging.info(f'render: {render.shape}')
@@ -633,8 +633,8 @@ class Resampler:
             render = wav_con[int(new_start * Config.sample_rate):int(new_end * Config.sample_rate)]
             logging.info(f'cut_l:{int(new_start * Config.sample_rate)}')
             logging.info(f'cut_r:{len(wav_con)-int(new_end * Config.sample_rate)}')
-            logging.info(f'mel_l:{(int(new_start * Config.sample_rate)-256)//Config.hop_size}')
-            logging.info(f'mel_r:{(len(wav_con)-int(new_end * Config.sample_rate)-256)//Config.hop_size}')
+            logging.info(f'mel_l:{(int(new_start * Config.sample_rate)+256)//Config.hop_size}')
+            logging.info(f'mel_r:{(len(wav_con)-int(new_end * Config.sample_rate)+256)//Config.hop_size}')
 
             logging.info(f'wav_con: {wav_con.shape}')
             logging.info(f'render: {render.shape}')
@@ -722,11 +722,11 @@ if __name__ == '__main__':
         Config.model_type = vocoder_path.suffix
         raise ValueError(f'Invalid model type: {Config.model_type}')
 
-    melAnalysis_extract_hop_size = PitchAdjustableMelSpectrogram(
+    melAnalysis = PitchAdjustableMelSpectrogram(
         sample_rate=Config.sample_rate, 
         n_fft=Config.n_fft, 
         win_length=Config.win_size, 
-        hop_length=Config.extract_hop_size, 
+        hop_length=Config.origin_hop_size, 
         f_min=Config.mel_fmin, 
         f_max=Config.mel_fmax,
         n_mels=Config.n_mels
