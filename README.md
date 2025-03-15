@@ -8,7 +8,7 @@ hachimisampler was based on [straycat resampler](https://github.com/UtaUtaUtau/s
 ## how to use? 
 1. Install python 3.10 then run the commoand
 ```
-pip install numpy scipy resampy pyworld torch onnxruntime praat-parselmouth soundfile pyloudnorm
+pip install numpy scipy resampy onnxruntime soundfile pyloudnorm
 ```
 2. Download the CUDA version of PyTorch from the official website. (If you are sure that you will only use the ONNX version, then you can download the CPU version of PyTorch)
 3. Download the [release](https://github.com/mtfotto/hachimisampler/releases) unpack it and run the 'hachisampler.py'.
