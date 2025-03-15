@@ -4,7 +4,7 @@
 ## 使用方法
 python 3.10をインストールして、以下のコマンドを実行する。（コンダを推奨）
 ```
-pip install numpy scipy resampy pyworld torch onnxruntime praat-parselmouth soundfile pyloudnorm
+pip install numpy scipy resampy onnxruntime soundfile pyloudnorm
 ```
 2. 公式ウェブサイトからPyTorchのCUDA版をダウンロードしてください。（もしONNX版のみを使用することが確実であれば、CPU版のPyTorchをダウンロードすることができます）
 3. [リリース](https://github.com/mtfotto/hachimisampler/releases)をダウンロードして解凍し、「hachiserver.py 」を実行してください。
