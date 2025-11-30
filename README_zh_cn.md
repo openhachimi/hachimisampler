@@ -2,7 +2,7 @@
 # 哈基踩（hachimisampler)
  一个基于 [pc-nsf-hifigan](https://github.com/openvpi/vocoders)的新的utau重采样器。
 ## 为什么叫哈基踩（hachimisampler）?
-哈基踩由[straycat（流浪猫） resampler](https://github.com/UtaUtaUtau/straycat) 修改而来，用pc-nsf-hifigan替换了原来的world，哈基米 (ハチミ) 在日语里面是小猫的意思。
+哈基踩由[straycat（流浪猫） resampler](https://github.com/UtaUtaUtau/straycat) 修改而来，用pc-nsf-hifigan替换了原来的world，哈基米 (ハチミ) 在日语里面是蜂蜜的意思。
 ## 如何使用? 
 1. 安装python3.10并运行下面的指令（墙裂建议使用conda以方便管理环境）
 ```
